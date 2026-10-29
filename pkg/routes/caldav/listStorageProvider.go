@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"code.vikunja.io/api/pkg/caldav"
+	"code.vikunja.io/api/pkg/config"
 	"code.vikunja.io/api/pkg/db"
 	"code.vikunja.io/api/pkg/events"
 	"code.vikunja.io/api/pkg/log"
@@ -60,6 +61,19 @@ type VikunjaCaldavProjectStorage struct {
 	user        *user2.User
 	isPrincipal bool
 	isEntry     bool // Entry level handling should only return a link to the principal url
+}
+
+// timeZone is the zone the user's CalDAV dates are read and written in: their
+// setting, else the service zone, as for reminder notifications.
+func (vcls *VikunjaCaldavProjectStorage) timeZone() *time.Location {
+	if vcls.user != nil && vcls.user.Timezone != "" {
+		loc, err := time.LoadLocation(vcls.user.Timezone)
+		if err == nil {
+			return loc
+		}
+		log.Warningf("[CALDAV] Invalid time zone %q for user %d, using the service time zone: %v", vcls.user.Timezone, vcls.user.ID, err)
+	}
+	return config.GetTimeZone()
 }
 
 // GetResources returns either all projects, links to the principal, or only one project, depending on the request
@@ -119,6 +133,7 @@ func (vcls *VikunjaCaldavProjectStorage) GetResources(rpath string, withChildren
 				emitted[href] = true
 
 				taskResource := VikunjaProjectResourceAdapter{
+					timeZone:     vcls.timeZone(),
 					project:      vcls.project,
 					task:         task,
 					isCollection: false,
@@ -271,7 +286,8 @@ func (vcls *VikunjaCaldavProjectStorage) GetResourcesByList(rpaths []string) (re
 		}
 		emitted[href] = true
 		rr := VikunjaProjectResourceAdapter{
-			task: t,
+			timeZone: vcls.timeZone(),
+			task:     t,
 		}
 		addTaskResource(urlProjectID, t, &rr, &resources)
 	}
@@ -294,6 +310,7 @@ func (vcls *VikunjaCaldavProjectStorage) GetResourcesByFilters(rpath string, _ *
 		var resources []data.Resource
 		for i := range vcls.project.Tasks {
 			rr := VikunjaProjectResourceAdapter{
+				timeZone:     vcls.timeZone(),
 				project:      vcls.project,
 				task:         &vcls.project.Tasks[i].Task,
 				isCollection: false,
@@ -514,8 +531,9 @@ func (vcls *VikunjaCaldavProjectStorage) GetResource(rpath string) (*data.Resour
 		}
 
 		rr := VikunjaProjectResourceAdapter{
-			project: vcls.project,
-			task:    vcls.task,
+			timeZone: vcls.timeZone(),
+			project:  vcls.project,
+			task:     vcls.task,
 		}
 		r := data.NewResource(vcls.hrefFor(rpath), &rr)
 		return &r, true, nil
@@ -560,7 +578,7 @@ func (vcls *VikunjaCaldavProjectStorage) CreateResource(rpath, content string) (
 		return nil, errs.ResourceNotFoundError
 	}
 
-	vTask, _, err := caldav.ParseTaskFromVTODO(content)
+	vTask, _, err := caldav.ParseTaskFromVTODO(content, vcls.timeZone())
 	if err != nil {
 		log.Errorf("[CALDAV] Failed to parse VTODO in CreateResource: %v", err)
 		log.Debugf("[CALDAV] VTODO content that failed to parse: %s", content)
@@ -645,8 +663,9 @@ func (vcls *VikunjaCaldavProjectStorage) CreateResource(rpath, content string) (
 
 	// Build up the proper response
 	rr := VikunjaProjectResourceAdapter{
-		project: vcls.project,
-		task:    vTask,
+		timeZone: vcls.timeZone(),
+		project:  vcls.project,
+		task:     vTask,
 	}
 	r := data.NewResource(rpath, &rr)
 	return &r, nil
@@ -680,7 +699,7 @@ func (vcls *VikunjaCaldavProjectStorage) UpdateResource(rpath, content string) (
 		return nil, err
 	}
 
-	vTask, props, err := caldav.ParseTaskFromVTODO(content)
+	vTask, props, err := caldav.ParseTaskFromVTODO(content, vcls.timeZone())
 	if err != nil {
 		log.Errorf("[CALDAV] Failed to parse VTODO in UpdateResource: %v", err)
 		log.Debugf("[CALDAV] VTODO content that failed to parse: %s", content)
@@ -835,8 +854,9 @@ func (vcls *VikunjaCaldavProjectStorage) UpdateResource(rpath, content string) (
 
 	// base, not vTask: Update wrote back the Updated timestamp the etag is built from.
 	rr := VikunjaProjectResourceAdapter{
-		project: vcls.project,
-		task:    &base,
+		timeZone: vcls.timeZone(),
+		project:  vcls.project,
+		task:     &base,
 	}
 	r := data.NewResource(rpath, &rr)
 	return &r, nil
@@ -1085,6 +1105,8 @@ type VikunjaProjectResourceAdapter struct {
 	project      *models.ProjectWithTasksAndBuckets
 	projectTasks []*models.TaskWithComments
 	task         *models.Task
+	// The zone of the user reading it, which its dates are written in.
+	timeZone *time.Location
 
 	isPrincipal  bool
 	isCollection bool
@@ -1128,12 +1150,12 @@ func (vlra *VikunjaProjectResourceAdapter) CalculateEtag() string {
 // GetContent returns the content string of a resource (a task in our case)
 func (vlra *VikunjaProjectResourceAdapter) GetContent() string {
 	if vlra.project != nil && vlra.projectTasks != nil {
-		return caldav.GetCaldavTodosForTasks(vlra.project, vlra.projectTasks)
+		return caldav.GetCaldavTodosForTasks(vlra.project, vlra.projectTasks, vlra.timeZone)
 	}
 
 	if vlra.task != nil {
 		project := models.ProjectWithTasksAndBuckets{Tasks: []*models.TaskWithComments{{Task: *vlra.task}}}
-		return caldav.GetCaldavTodosForTasks(&project, project.Tasks)
+		return caldav.GetCaldavTodosForTasks(&project, project.Tasks, vlra.timeZone)
 	}
 
 	return ""
@@ -1208,6 +1230,7 @@ func (vcls *VikunjaCaldavProjectStorage) getProjectRessource(isCollection bool) 
 	}
 
 	rr = VikunjaProjectResourceAdapter{
+		timeZone:     vcls.timeZone(),
 		project:      vcls.project,
 		projectTasks: projectTasks,
 		isCollection: isCollection,
