@@ -64,6 +64,11 @@
                     "comment": "Enable the caldav endpoint, see the docs for more details"
                 },
                 {
+                    "key": "caldavundatedfiltercopies",
+                    "default_value": "false",
+                    "comment": "Serve the tasks in saved filter and Favorites CalDAV collections without dates, repeats and alarms.\nThose tasks also appear in their real project's collection. Clients that merge all collections into one view (like the Today and Scheduled lists in iOS Reminders) show one copy per collection and fire each copy's alarms. With this enabled, only the real project's copy carries dates and alarms.\nEdits made through a saved filter or Favorites collection keep the stored dates, reminders and repeats."
+                },
+                {
                     "key": "motd",
                     "default_value": "",
                     "comment": "Set the motd message, available from the /info endpoint"
