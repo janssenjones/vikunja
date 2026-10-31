@@ -291,6 +291,10 @@ func (vcls *VikunjaCaldavProjectStorage) GetResourcesByList(rpaths []string) (re
 			timeZone: vcls.timeZone(),
 			task:     t,
 		}
+		// Only the requested pseudo collection gets past the check above with a foreign project id.
+		if urlProjectID != t.ProjectID {
+			rr.project = vcls.project
+		}
 		addTaskResource(urlProjectID, t, &rr, &resources)
 	}
 
@@ -1149,11 +1153,59 @@ func (vlra *VikunjaProjectResourceAdapter) IsCalendar() bool {
 	return !vlra.isPrincipal
 }
 
+// undatedCopyEtagSuffix keeps the etag of an undated copy apart from the dated one, so clients
+// holding a dated copy from before the setting was enabled download it again.
+const undatedCopyEtagSuffix = `-undated`
+
+// servesUndatedCopies reports whether the tasks of this resource are copies in a saved filter or
+// Favorites collection that should go out without dates, repeats and alarms. Each task also lives
+// in its real project's collection, and clients that merge all collections into one view (iOS
+// Reminders' Today and Scheduled) would otherwise show it once per collection and fire every
+// copy's alarms. Updates through these collections only overwrite the properties they contain,
+// so the stored dates survive a round trip.
+func (vlra *VikunjaProjectResourceAdapter) servesUndatedCopies() bool {
+	return vlra.project != nil &&
+		models.IsPseudoProjectID(vlra.project.ID) &&
+		config.ServiceCaldavUndatedFilterCopies.GetBool()
+}
+
+func undatedCopy(t *models.TaskWithComments) *models.TaskWithComments {
+	c := *t
+	c.DueDate = time.Time{}
+	c.StartDate = time.Time{}
+	c.EndDate = time.Time{}
+	c.RepeatAfter = 0
+	c.RepeatMode = models.TaskRepeatModeDefault
+	c.Reminders = nil
+	return &c
+}
+
+// todos renders tasks as VTODOs, without dates if this resource serves undated copies.
+func (vlra *VikunjaProjectResourceAdapter) todos(project *models.ProjectWithTasksAndBuckets, tasks []*models.TaskWithComments) string {
+	if !vlra.servesUndatedCopies() {
+		return caldav.GetCaldavTodosForTasks(project, tasks, vlra.timeZone)
+	}
+	copies := make([]*models.TaskWithComments, 0, len(tasks))
+	for _, t := range tasks {
+		copies = append(copies, undatedCopy(t))
+	}
+	return caldav.GetCaldavTodosForTasks(project, copies, vlra.timeZone)
+}
+
+// taskEtag is the etag of one task as served by this resource's collection.
+func (vlra *VikunjaProjectResourceAdapter) taskEtag(task *models.Task) string {
+	etag := strconv.FormatInt(task.ID, 10) + `-` + strconv.FormatInt(task.Updated.Unix(), 10)
+	if vlra.servesUndatedCopies() {
+		etag += undatedCopyEtagSuffix
+	}
+	return `"` + etag + `"`
+}
+
 // CalculateEtag returns the etag of a resource
 func (vlra *VikunjaProjectResourceAdapter) CalculateEtag() string {
 
 	if vlra.task != nil {
-		return `"` + strconv.FormatInt(vlra.task.ID, 10) + `-` + strconv.FormatInt(vlra.task.Updated.Unix(), 10) + `"`
+		return vlra.taskEtag(vlra.task)
 	}
 
 	if vlra.project == nil {
@@ -1174,6 +1226,9 @@ func (vlra *VikunjaProjectResourceAdapter) CalculateEtag() string {
 	if !vlra.project.LastPurgedAt.IsZero() {
 		etag += ";purge=" + strconv.FormatInt(vlra.project.LastPurgedAt.Unix(), 10)
 	}
+	if vlra.servesUndatedCopies() {
+		etag += undatedCopyEtagSuffix
+	}
 	return `"` + etag + `"`
 }
 
@@ -1188,12 +1243,11 @@ func (vlra *VikunjaProjectResourceAdapter) GetContent() string {
 
 func (vlra *VikunjaProjectResourceAdapter) renderContent() string {
 	if vlra.project != nil && vlra.projectTasks != nil {
-		return caldav.GetCaldavTodosForTasks(vlra.project, vlra.projectTasks, vlra.timeZone)
+		return vlra.todos(vlra.project, vlra.projectTasks)
 	}
 
 	if vlra.task != nil {
-		project := models.ProjectWithTasksAndBuckets{Tasks: []*models.TaskWithComments{{Task: *vlra.task}}}
-		return caldav.GetCaldavTodosForTasks(&project, project.Tasks, vlra.timeZone)
+		return vlra.todos(&models.ProjectWithTasksAndBuckets{}, []*models.TaskWithComments{{Task: *vlra.task}})
 	}
 
 	return ""

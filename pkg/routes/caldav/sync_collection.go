@@ -24,7 +24,6 @@ import (
 	"strings"
 	"time"
 
-	caldavpkg "code.vikunja.io/api/pkg/caldav"
 	"code.vikunja.io/api/pkg/db"
 	"code.vikunja.io/api/pkg/log"
 	"code.vikunja.io/api/pkg/models"
@@ -240,7 +239,7 @@ func writeSyncResponse(
 
 	for _, t := range tasks {
 		href := taskURL(rr.project.ID, &t.Task)
-		etag := `"` + strconv.FormatInt(t.ID, 10) + `-` + strconv.FormatInt(t.Updated.Unix(), 10) + `"`
+		etag := rr.taskEtag(&t.Task)
 
 		sb.WriteString("  <D:response>\n")
 		sb.WriteString("    <D:href>" + xmlEscape(href) + "</D:href>\n")
@@ -248,8 +247,7 @@ func writeSyncResponse(
 		sb.WriteString("      <D:prop>\n")
 		sb.WriteString("        <D:getetag>" + xmlEscape(etag) + "</D:getetag>\n")
 		if includeCalendarData {
-			project := rr.project
-			calData := caldavpkg.GetCaldavTodosForTasks(project, []*models.TaskWithComments{t}, rr.timeZone)
+			calData := rr.todos(rr.project, []*models.TaskWithComments{t})
 			sb.WriteString("        <C:calendar-data>" + xmlEscape(calData) + "</C:calendar-data>\n")
 		}
 		sb.WriteString("      </D:prop>\n")
