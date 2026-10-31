@@ -1,0 +1,45 @@
+# Fork-only: builds the image tasks.jtest.me runs from the `deploy` branch, which is an
+# upstream release tag plus cherry-picks of our open upstream PRs. Not meant for upstream.
+name: Deploy image
+
+on:
+  push:
+    branches:
+      - deploy
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Version
+        id: version
+        # .deploy-version holds <upstream tag>-jj.<n>; bump n for every deploy.
+        run: echo "version=$(tr -d '[:space:]' < .deploy-version)" >> "$GITHUB_OUTPUT"
+      - name: Login to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          # The cluster nodes are all amd64.
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/vikunja:${{ steps.version.outputs.version }}
+            ghcr.io/${{ github.repository_owner }}/vikunja:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+          build-args: |
+            RELEASE_VERSION=${{ steps.version.outputs.version }}
