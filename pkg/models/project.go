@@ -810,10 +810,9 @@ func addProjectDetails(s *xorm.Session, projects []*Project, a web.Auth) (err er
 		}
 
 		// Don't override the favorite state if it was already set from before (favorite saved filters do this)
-		if p.IsFavorite {
-			continue
+		if !p.IsFavorite {
+			p.IsFavorite = favs[p.ID]
 		}
-		p.IsFavorite = favs[p.ID]
 
 		if subscription, exists := subscriptions[p.ID]; exists && len(subscription) > 0 {
 			p.Subscription = subscription[0]
