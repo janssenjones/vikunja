@@ -1037,6 +1037,39 @@ func TestProject_ReadAll(t *testing.T) {
 		assert.Equal(t, int64(-1), ls[0].ID)
 		assert.Equal(t, int64(-2), ls[1].ID)
 	})
+	t.Run("saved filters include their views whether or not they are favorites", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+		u := &user.User{ID: 1}
+
+		filterProjectIDs := map[bool]int64{}
+		for _, favorite := range []bool{true, false} {
+			sf := &SavedFilter{
+				Title:      "views filter",
+				Filters:    &TaskCollection{Filter: "done = false"},
+				IsFavorite: favorite,
+			}
+			err := sf.Create(s, u)
+			require.NoError(t, err)
+			filterProjectIDs[favorite] = getProjectIDFromSavedFilterID(sf.ID)
+		}
+
+		project := Project{}
+		projects, _, _, err := project.ReadAll(s, u, "", 1, 50)
+		require.NoError(t, err)
+
+		byID := map[int64]*Project{}
+		for _, p := range projects.([]*Project) {
+			byID[p.ID] = p
+		}
+		for favorite, id := range filterProjectIDs {
+			p, has := byID[id]
+			require.True(t, has, "saved filter project %d missing", id)
+			assert.Equal(t, favorite, p.IsFavorite)
+			assert.Len(t, p.Views, 4, "favorite=%v", favorite)
+		}
+	})
 	t.Run("archived propagation aggregation", func(t *testing.T) {
 		// Regression test for #2589. Child projects of archived parents carry
 		// is_archived themselves; getAllProjectsForUser must return that flag and
